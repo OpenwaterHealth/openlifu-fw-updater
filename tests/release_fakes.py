@@ -111,6 +111,13 @@ class FakeBoard:
     def firmware_header(self, module=0):
         return LIFUCrypto.FirmwareHeader.from_bytes(self.images[module])
 
+    #: The bootloader version the application reports (OW_CMD_BL_VERSION);
+    #: None as from firmware without the command.
+    bootloader = None
+
+    def get_bootloader_version(self, module=0):
+        return self.bootloader
+
     def read_config(self, module=0):
         """The board's user configuration (the SDK's release update compares
         it before and after); unchanged by any fake update."""
