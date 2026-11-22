@@ -116,3 +116,65 @@ def test_report_lines_name_their_row():
 def test_the_release_line(release):
     assert rows.release_line("v9", release) == (
         f"v9 (research): console 1.3.0-rc.4, transmitter 2.1.0-rc.7, presets {COMMIT[:7]}")
+
+
+def _plan(release, keys):
+    return ru.ReleaseUpdate(release, *unit(keys, release)).plan()
+
+
+def test_a_conversion_is_pending_and_says_it_locks(release, keys):
+    plan = _plan(release, keys)
+    plan.firmware = [ru.Step(s.target, "convert", "research -> clinical", s.board)
+                     for s in plan.firmware]
+    table = {r.key: r for r in rows.plan_rows(plan)}
+    for key in ("console", "transmitter master", "transmitter module 1"):
+        assert table[key].status is Status.CONVERT
+        assert table[key].status_text == "Convert to clinical (locks the bootloader)"
+        assert table[key].pending
+    assert [r.key for r in rows.converts(list(table.values()))] == [
+        "console", "transmitter master", "transmitter module 1"]
+
+
+def test_presets_through_the_bootloader(release, keys):
+    plan = _plan(release, keys)
+    plan.presets = [ru.Step("console page", "write-presets-dfu", "empty")]
+    plan.presets += [ru.Step(f"transmitter module {m} slot {s:02d}", "write-presets-dfu",
+                             "empty", slot=s, module=m) for m in (0, 1) for s in range(RELEASED)]
+    plan.presets.append(ru.Step("transmitter module 1 slot 13", "clear-slot", "stray",
+                                slot=13, module=1))
+    table = {r.key: r for r in rows.plan_rows(plan)}
+    assert table["presets console"].status_text == "Write 1 (through the bootloader)"
+    assert table["presets module 0"].status_text == f"Write {RELEASED} (through the bootloader)"
+    assert table["presets module 1"].status_text == (
+        f"Write {RELEASED} (through the bootloader), clears 1")
+    assert table["presets module 1"].installed == f"0 of {RELEASED}"
+    assert all(table[k].pending for k in table if k.startswith("presets"))
+
+
+def test_an_unknown_action_shows_its_name(release, keys):
+    plan = _plan(release, keys)
+    first = plan.firmware[0]
+    plan.firmware[0] = ru.Step(first.target, "frobnicate", "?", first.board)
+    plan.firmware.append(ru.Step("bridge", "convert", "?"))      # no board
+    plan.presets.append(ru.Step("transmitter module 0 slot 05", "reticulate", "?",
+                                slot=5, module=0))
+    table = {r.key: r for r in rows.plan_rows(plan)}
+    assert table["console"].status is Status.OTHER
+    assert table["console"].status_text == "frobnicate"
+    assert table["bridge"].status is Status.CONVERT and table["bridge"].installed == "-"
+    assert table["presets module 0"].status_text == "reticulate 1"
+    assert table["presets module 0"].pending
+
+
+def test_the_banner_per_domain():
+    clinical = rows.banner("clinical")
+    assert clinical.text == ("CLINICAL UPDATER \u2014 converts the unit to clinical and locks "
+                             "its bootloaders (RDP1)")
+    assert clinical.visible and clinical.title == "Clinical"
+    assert clinical.background == "#8B0000" and clinical.foreground == "#FFFFFF"
+    research = rows.banner("research")
+    assert research.text == "RESEARCH UPDATER" and research.visible
+    assert research.title == "Research" and research.background != clinical.background
+    none = rows.banner(None)
+    assert not none.visible and none.text == "Release: none" and none.title == ""
+    assert rows.banner("vet").text == "VET UPDATER"
