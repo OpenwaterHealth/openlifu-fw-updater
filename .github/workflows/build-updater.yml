@@ -1,0 +1,116 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Build updater
+
+# ---------------------------------------------------------------------------
+# Builds OpenLIFUUpdater.exe (window) and openlifu-fw-updater.exe (command
+# line) around one diathermy release, on demand or for a tag:
+#
+#   gh workflow run build-updater.yml --ref <branch-or-tag> -f release_tag=v0.2.0-rc8
+#   git tag 0.1.0 && git push origin 0.1.0     (uses the repository variable
+#                                              DIATHERMY_RELEASE as the release)
+#
+# The job fetches the release's firmware and research preset zips
+# (scripts/fetch_release.py checks them against the release's published
+# SHA-256 digests), runs the tests, builds both exes and starts each once
+# (build.ps1: --help, and --self-test, which verifies the embedded release
+# against the SDK's trusted keys and loads libusb; neither opens a unit). The
+# exes, release.json and SHA256SUMS are kept as a workflow artifact.
+#
+# TODO(code signing): the exes are not code-signed yet. Do it the way
+# openlifu-diathermy-application's release-build.yml does: on rc and full
+# release tags only, eSigner CKA (SSL.com's Cloud Key Adapter) loads
+# Openwater's EV code-signing certificate into Cert:\CurrentUser\My (the key
+# stays in SSL.com's cloud HSM; secrets ES_USERNAME / ES_PASSWORD /
+# ES_TOTP_SECRET), signtool signs against the store with a timestamp, and a
+# tag build without those secrets fails rather than shipping unsigned (see its
+# docs/code-signing.md). Not wired here: this repository has no such secrets.
+# ---------------------------------------------------------------------------
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "openlifu-diathermy-application release to embed (e.g. v0.2.0-rc8)"
+        required: true
+      sdk_ref:
+        description: "openlifu-sdk branch, tag or commit instead of the pyproject pin (optional)"
+        required: false
+        default: ""
+  push:
+    tags:
+      - "*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        env:
+          SDK_REF: ${{ inputs.sdk_ref }}
+        run: |
+          python -m pip install -e ".[build,test]"
+          if ($LASTEXITCODE -ne 0) { throw "The updater could not be installed." }
+          if ($env:SDK_REF) {
+            python -m pip install --force-reinstall --no-deps "openlifu-sdk[crypto] @ git+https://github.com/OpenwaterHealth/openlifu-sdk.git@$env:SDK_REF"
+            if ($LASTEXITCODE -ne 0) { throw "openlifu-sdk@$env:SDK_REF could not be installed." }
+          }
+          "SDK_VERSION=$(python -c "import importlib.metadata as m; print(m.version('openlifu-sdk'))")" >> $env:GITHUB_ENV
+
+      # The GitHub CLI reads the diathermy release with GH_TOKEN: a token with
+      # contents:read on openlifu-diathermy-application (DIATHERMY_READ_TOKEN),
+      # or this run's own token where that suffices.
+      - name: Fetch the release
+        env:
+          GH_TOKEN: ${{ secrets.DIATHERMY_READ_TOKEN || github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag || vars.DIATHERMY_RELEASE }}
+        run: |
+          if (-not $env:RELEASE_TAG) { throw "No release: pass release_tag, or set the DIATHERMY_RELEASE variable." }
+          python scripts/fetch_release.py $env:RELEASE_TAG
+          if ($LASTEXITCODE -ne 0) { throw "The release could not be fetched." }
+          "RELEASE_TAG=$env:RELEASE_TAG" >> $env:GITHUB_ENV
+
+      - name: Tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m pytest -ra
+          if ($LASTEXITCODE -ne 0) { throw "Tests failed." }
+
+      # build.ps1 starts both exes once: a build that cannot start fails here.
+      - name: Build
+        run: ./build.ps1
+
+      - name: Package
+        run: |
+          New-Item -ItemType Directory -Force package | Out-Null
+          Copy-Item dist\OpenLIFUUpdater.exe, dist\openlifu-fw-updater.exe package\
+          Copy-Item src\openlifu_fw_updater\release\release.json package\
+          $sums = Get-ChildItem package -File | Sort-Object Name | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" }
+          [IO.File]::WriteAllText("$PWD\package\SHA256SUMS", ($sums -join "`n") + "`n")
+          $sums
+          @("## Open-LIFU Updater", "",
+            "| | |", "|---|---|",
+            "| Release | ``$env:RELEASE_TAG`` |",
+            "| openlifu-sdk | ``$env:SDK_VERSION`` |",
+            "| Commit | ``$env:GITHUB_SHA`` |", "",
+            '```', $sums, '```') >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenLIFUUpdater-${{ env.RELEASE_TAG }}-${{ github.sha }}
+          path: package/
+          if-no-files-found: error
+          retention-days: 30
