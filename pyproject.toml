@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openlifu-fw-updater"
+version = "0.1.0"
+description = "Open-LIFU firmware updater: takes a unit to a diathermy release (firmware and presets)"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+# All update logic lives in the SDK (openlifu_sdk.io.LIFUReleaseUpdate); this
+# package only finds the release (embedded at build time, or given on the
+# command line) and runs it. The `crypto` extra verifies the release's
+# signatures on the host.
+dependencies = [
+  "openlifu-sdk[crypto] @ git+https://github.com/OpenwaterHealth/openlifu-sdk.git@2.1.0-rc.14",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+openlifu-fw-updater = "openlifu_fw_updater.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# The embedded release (scripts/fetch_release.py); empty in a source checkout.
+openlifu_fw_updater = ["release/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "BLE"]

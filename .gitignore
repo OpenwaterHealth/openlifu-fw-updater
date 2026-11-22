@@ -1,0 +1,9 @@
+# The embedded release (scripts/fetch_release.py): built in, never committed.
+src/openlifu_fw_updater/release/
+__pycache__/
+*.egg-info/
+.venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/

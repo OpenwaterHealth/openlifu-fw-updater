@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+# One-time setup after cloning:
+#
+#     pip install pre-commit
+#     pre-commit install
+
+repos:
+  - repo: https://github.com/Lucas-C/pre-commit-hooks
+    rev: v1.5.5
+    hooks:
+      - id: insert-license
+        name: SPDX header (Python / YAML)
+        files: \.(py|ya?ml)$
+        args:
+          - --license-filepath=.github/spdx-header.txt
+          - --comment-style=#
+          - --no-extra-eol
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.0
+    hooks:
+      - id: ruff
