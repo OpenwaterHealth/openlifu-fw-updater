@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openlifu-fw-updater"
+version = "0.1.0"
+description = "Open-LIFU firmware updater: takes a unit to a diathermy release (firmware and presets)"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+# All update logic lives in the SDK (openlifu_sdk.io.LIFUReleaseUpdate); this
+# package only finds the release (embedded at build time, or given on the
+# command line) and runs it. The `crypto` extra verifies the release's
+# signatures on the host.
+dependencies = [
+  "openlifu-sdk[crypto] @ git+https://github.com/OpenwaterHealth/openlifu-sdk.git@2.1.0-rc.14",
+]
+
+[project.optional-dependencies]
+# The window (OpenLIFUUpdater). Qt for Python is LGPL-3.0; never PyQt6 (GPL),
+# so never openlifu-sdk[ui]. An extra, so the command line installs and runs
+# without Qt.
+gui = [
+  "PySide6-Essentials==6.12.0",
+  "shiboken6==6.12.0",
+]
+test = [
+  "openlifu-fw-updater[gui]",
+  "pytest>=8",
+  "pytest-qt==4.5.0",
+]
+# Builds the two exes (OpenLIFUUpdater.spec, build.ps1).
+build = [
+  "openlifu-fw-updater[gui]",
+  "pyinstaller==6.22.3",
+]
+
+[project.scripts]
+openlifu-fw-updater = "openlifu_fw_updater.cli:main"
+
+[project.gui-scripts]
+OpenLIFUUpdater = "openlifu_fw_updater.gui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# The embedded release (scripts/fetch_release.py); empty in a source checkout.
+openlifu_fw_updater = ["release/*", "assets/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The window's tests run headless (tests/conftest.py sets offscreen).
+qt_api = "pyside6"
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "BLE"]
