@@ -15,7 +15,7 @@ license-files = ["LICENSE"]
 # command line) and runs it. The `crypto` extra verifies the release's
 # signatures on the host.
 dependencies = [
-  "openlifu-sdk[crypto] @ git+https://github.com/OpenwaterHealth/openlifu-sdk.git@2.1.0-rc.14",
+  "openlifu-sdk[crypto] @ git+https://github.com/OpenwaterHealth/openlifu-sdk.git@2.1.0-rc.15",
 ]
 
 [project.optional-dependencies]
