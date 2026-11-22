@@ -7,7 +7,7 @@ name = "openlifu-fw-updater"
 version = "0.1.0"
 description = "Open-LIFU firmware updater: takes a unit to a diathermy release (firmware and presets)"
 readme = { file = "README.md", content-type = "text/markdown" }
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 # All update logic lives in the SDK (openlifu_sdk.io.LIFUReleaseUpdate); this
@@ -57,7 +57,7 @@ qt_api = "pyside6"
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "BLE"]

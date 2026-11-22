@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14.10"
       - uses: pre-commit/action@v3.0.1
       - name: Bandit
         run: |
@@ -40,7 +40,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14.10"
       # Qt for Python's offscreen platform still loads libEGL and xkbcommon.
       - name: Qt runtime libraries
         if: runner.os == 'Linux'
