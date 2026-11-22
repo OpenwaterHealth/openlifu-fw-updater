@@ -38,7 +38,40 @@ This first version handles **research releases on research units**. Converting a
 unit to clinical, and clinical presets (which are written through the bootloaders), are
 refused with a message for now.
 
-## Use
+## The window: `OpenLIFUUpdater`
+
+```
+pip install -e .[gui]
+OpenLIFUUpdater                                   # the embedded release
+OpenLIFUUpdater --firmware firmware-v0.2.0-rc8.zip --presets research-presets-v0.2.0-rc8.zip
+OpenLIFUUpdater --release-dir <folder with release.json>
+OpenLIFUUpdater --self-test                       # build the window, verify the release, load libusb; no unit
+```
+
+One window, one table:
+
+| Device | Installed | This release | Status |
+|---|---|---|---|
+| Console, Transmitter master, Transmitter module N | the version the board reports | the release's firmware tag (`firmware-lock.json`) | Up to date / Update / Update (replaces bootloader) / Refused |
+| Console presets, Transmitter presets (master, module N) | how many of the released packages it holds ("13 of 13") | diathermy commit and context | Up to date / Update (writes 13, clears 1) / Refused |
+
+- **Update (replaces bootloader)**: the board runs firmware from before its current bootloader
+  (console below 1.3.0, transmitter below 2.1.0), so its 1.0.x bootloader is replaced on the
+  way. The confirmation says so; it cannot be undone.
+- **Refused**: the SDK's reason is shown under the table, and there is no Update button.
+- Update asks once (Cancel is the default), then shows each step and the DFU progress. After
+  the run the unit is read again, and the table and the read-back result show where it is.
+- If another Open-LIFU application holds the unit, the window says so; close it and Check
+  again. While the console or the transmitter is missing, the window looks for it every 2 s.
+- The window cannot be closed during an update. Closing it releases the unit for other
+  applications.
+- The log (`update-<time>.log`, next to the exe, or in the temp folder) has every step and
+  the read-back; Open log shows it.
+
+Qt is Qt for Python (PySide6, LGPL-3.0), an optional extra so the command line runs without
+it. PyQt (GPL) and `openlifu-sdk[ui]` are never used.
+
+## The command line: `openlifu-fw-updater`
 
 ```
 pip install -e .[test]
@@ -61,11 +94,28 @@ This downloads the release's firmware and research preset zips with the GitHub C
 them against the release's published digests. It writes them to `src/openlifu_fw_updater/release/`,
 which is git-ignored. `openlifu-fw-updater` with no arguments then installs that release.
 
+## Building the exes
+
+```
+pip install -e .[build]
+python scripts/fetch_release.py v0.2.0-rc8
+.\build.ps1
+```
+
+`OpenLIFUUpdater.spec` builds `dist\OpenLIFUUpdater.exe` (window) and
+`dist\openlifu-fw-updater.exe` (command line, no Qt), each carrying the embedded release, the
+SDK's trusted public keys and its libusb. `build.ps1` then runs `openlifu-fw-updater.exe --help`
+and `OpenLIFUUpdater.exe --self-test`; neither opens a unit.
+
+CI (`.github/workflows/build-updater.yml`, on demand with a release tag, or on a tag push with
+the `DIATHERMY_RELEASE` variable) fetches the release, runs the tests, builds both exes and
+keeps them as a workflow artifact. The exes are not code-signed yet.
+
 ## Development
 
 ```
 pre-commit install
-python -m pytest
+python -m pytest          # the window's tests run headless (QT_QPA_PLATFORM=offscreen)
 ```
 
 The SDK pin in `pyproject.toml` must be a tag that has `LIFUReleaseUpdate`. To work against a

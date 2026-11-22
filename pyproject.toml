@@ -19,20 +19,41 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8"]
+# The window (OpenLIFUUpdater). Qt for Python is LGPL-3.0; never PyQt6 (GPL),
+# so never openlifu-sdk[ui]. An extra, so the command line installs and runs
+# without Qt.
+gui = [
+  "PySide6-Essentials==6.12.0",
+  "shiboken6==6.12.0",
+]
+test = [
+  "openlifu-fw-updater[gui]",
+  "pytest>=8",
+  "pytest-qt==4.5.0",
+]
+# Builds the two exes (OpenLIFUUpdater.spec, build.ps1).
+build = [
+  "openlifu-fw-updater[gui]",
+  "pyinstaller==6.22.3",
+]
 
 [project.scripts]
 openlifu-fw-updater = "openlifu_fw_updater.cli:main"
+
+[project.gui-scripts]
+OpenLIFUUpdater = "openlifu_fw_updater.gui:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 # The embedded release (scripts/fetch_release.py); empty in a source checkout.
-openlifu_fw_updater = ["release/*"]
+openlifu_fw_updater = ["release/*", "assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The window's tests run headless (tests/conftest.py sets offscreen).
+qt_api = "pyside6"
 
 [tool.ruff]
 line-length = 100
