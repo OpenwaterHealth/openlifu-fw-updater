@@ -5,6 +5,7 @@ update itself is the SDK's (openlifu-sdk unit-test/test_release_update.py)."""
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -47,19 +48,43 @@ def test_presets_without_firmware_are_refused(capsys):
     assert "--presets needs --firmware" in capsys.readouterr().err
 
 
-def test_files_on_the_command_line_replace_the_embedded_release(monkeypatch, tmp_path):
+def test_a_release_without_a_domain_is_research(tmp_path):
+    assert release.find_release(_embed(tmp_path / "release")).domain == "research"
+
+
+def test_the_release_json_domain_is_read(tmp_path):
+    folder = _embed(tmp_path / "release")
+    info = json.loads((folder / "release.json").read_text())
+    (folder / "release.json").write_text(json.dumps({**info, "domain": "clinical"}))
+    assert release.find_release(folder).domain == "clinical"
+
+
+def test_a_bundle_of_another_domain_than_release_json_is_refused(tmp_path):
+    files = release.ReleaseFiles("vX", tmp_path / "fw.zip", None, domain="clinical")
+    with pytest.raises(ValueError, match="says clinical, but the release is signed with the "
+                                         "research keys"):
+        release.check_domain(files, "research")
+    release.check_domain(files, "clinical")
+    # Files from the command line claim no domain: the bundle's stands.
+    release.check_domain(release.ReleaseFiles("vX", tmp_path / "fw.zip", None), "clinical")
+
+
+def test_files_on_the_command_line_replace_the_embedded_release(monkeypatch, tmp_path, capsys):
     from openlifu_sdk.io import LIFUReleaseUpdate as ru
 
     seen = {}
+    bundle = SimpleNamespace(domain="clinical")
     monkeypatch.setattr(ru.ReleaseBundle, "load",
                         classmethod(lambda cls, fw, presets: seen.update(fw=fw, presets=presets)
-                                    or "bundle"))
+                                    or bundle))
     monkeypatch.setattr(ru, "run_cli", lambda bundle, plan_only, yes: seen.update(
         bundle=bundle, plan_only=plan_only, yes=yes) or 0)
     assert cli.main(["--firmware", str(tmp_path / "fw.zip"), "--presets",
                      str(tmp_path / "p.zip"), "--plan"]) == 0
     assert seen["fw"].name == "fw.zip" and seen["presets"].name == "p.zip"
     assert seen["plan_only"] is True and seen["yes"] is False
+    assert seen["bundle"] is bundle
+    assert "Release (from the command line) (clinical)" in capsys.readouterr().out
 
 
 def test_a_bad_release_exits_with_its_reason(monkeypatch, tmp_path, capsys):

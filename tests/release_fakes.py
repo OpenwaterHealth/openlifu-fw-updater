@@ -111,11 +111,24 @@ class FakeBoard:
     def firmware_header(self, module=0):
         return LIFUCrypto.FirmwareHeader.from_bytes(self.images[module])
 
+    def read_config(self, module=0):
+        """The board's user configuration (the SDK's release update compares
+        it before and after); unchanged by any fake update."""
+        return _Config(b"OWCF\x01{\"sn\": \"bench\"}")
+
     def is_connected(self):
         return self.connected
 
     def connect(self):
         return self.connected
+
+
+class _Config:
+    def __init__(self, raw):
+        self.raw = raw
+
+    def to_wire_bytes(self):
+        return self.raw
 
 
 class FakeHv(FakeBoard):

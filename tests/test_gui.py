@@ -4,6 +4,8 @@ each state and what the operator can do there."""
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 pytest.importorskip("PySide6")
@@ -18,6 +20,7 @@ from release_fakes import (  # noqa: E402  # reason: after importorskip
 
 from openlifu_fw_updater import gui  # noqa: E402  # reason: after importorskip
 from openlifu_fw_updater.release import ReleaseFiles  # noqa: E402  # reason: after importorskip
+from openlifu_fw_updater.rows import Status  # noqa: E402  # reason: after importorskip
 
 WAIT_MS = 20_000
 
@@ -56,6 +59,8 @@ def test_a_unit_on_the_release_is_up_to_date(qtbot, make_window, release, keys):
     window = make_window(lambda: interface)
     qtbot.waitUntil(lambda: _idle(window) and bool(window._status_cells), timeout=WAIT_MS)
     assert "vTest (research)" in window._subtitle.text()
+    assert window._banner.isVisibleTo(window) and window._banner.text() == "RESEARCH UPDATER"
+    assert window.windowTitle() == "Open-LIFU Updater \u2014 Research"
     assert set(_status(window).values()) == {"Up to date"}
     assert window._message.text() == "The unit already runs this release."
     assert window._primary.text() == "Close"
@@ -171,12 +176,55 @@ def test_nothing_connected(qtbot, make_window, release, keys):
     assert window._poll.isActive()
 
 
+def test_a_clinical_release_shows_the_clinical_banner(qtbot, make_window, tmp_path, keys):
+    from release_fakes import make_firmware, make_presets
+
+    root = tmp_path / "clinical"
+    root.mkdir()
+    files = ReleaseFiles(tag="vClin", firmware=make_firmware(root, keys, "clinical"),
+                         presets=make_presets(root, keys, "clinical"), domain="clinical")
+
+    def no_unit():
+        raise RuntimeError("no unit in this test")
+
+    window = make_window(no_unit, files)
+    qtbot.waitUntil(lambda: "vClin" in window._subtitle.text(), timeout=WAIT_MS)
+    assert window._banner.isVisibleTo(window)
+    assert window._banner.text().startswith("CLINICAL UPDATER")
+    assert "locks its bootloaders (RDP1)" in window._banner.text()
+    assert "#8B0000" in window._banner.styleSheet()
+    assert window.windowTitle() == "Open-LIFU Updater \u2014 Clinical"
+
+
+def test_a_conversion_is_confirmed_with_the_lock_warning(qtbot, make_window, release, keys,
+                                                         monkeypatch):
+    window = make_window(lambda: FakeInterface(*unit(keys, release)))
+    qtbot.waitUntil(lambda: _idle(window) and bool(window._status_cells), timeout=WAIT_MS)
+    window._rows = [replace(r, status=Status.CONVERT) if not r.key.startswith("presets") else r
+                    for r in window._rows]
+    asked = []
+
+    def look(box):
+        asked.append((box.text(), box.informativeText(), box.defaultButton().text()))
+        return box.defaultButton()
+
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: None)
+    monkeypatch.setattr(QMessageBox, "clickedButton", look)
+    assert not window._confirm()
+    text, informative, default = asked[0]
+    assert text == "Convert the unit to clinical now?" and default == "Cancel"
+    assert "bootloaders of console, transmitter master, transmitter module 1 are replaced " \
+           "with the clinical bootloader" in informative
+    assert "locked (RDP1)" in informative and "SWD recovery (RMA)" in informative
+
+
 def test_a_bad_release_is_fatal(qtbot, make_window, tmp_path):
     files = ReleaseFiles(tag="vBad", firmware=tmp_path / "missing.zip", presets=None)
     window = make_window(lambda: pytest.fail("the unit must not be opened"), files)
     qtbot.waitUntil(lambda: window._message.text().startswith("The release cannot be used"),
                     timeout=WAIT_MS)
     assert not window._check_button.isEnabled() and window._primary.text() == "Close"
+    assert not window._banner.isVisibleTo(window) and window.windowTitle() == "Open-LIFU Updater"
 
 
 def test_closing_is_refused_while_updating(qtbot, make_window, release, keys, monkeypatch):
