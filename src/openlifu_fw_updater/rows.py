@@ -30,11 +30,23 @@ class Status(Enum):
     UP_TO_DATE = "Up to date"
     UPDATE = "Update"
     REPLACES_BOOTLOADER = "Update (replaces bootloader)"
+    #: A research board taken to a clinical release: the clinical bootloader
+    #: replaces the research one and locks the board (RDP1).
+    CONVERT = "Convert to clinical (locks the bootloader)"
+    #: Presets written through the bootloader (clinical presets).
+    WRITE_DFU = "Write (through the bootloader)"
+    #: An SDK action this updater does not know; shown by its name.
+    OTHER = "Other"
     REFUSED = "Refused"
 
 
 #: Statuses that write to the unit.
-PENDING = frozenset({Status.UPDATE, Status.REPLACES_BOOTLOADER})
+PENDING = frozenset({Status.UPDATE, Status.REPLACES_BOOTLOADER, Status.CONVERT,
+                     Status.WRITE_DFU, Status.OTHER})
+
+#: Preset step actions that write a package (the second through the bootloader).
+_PRESET_WRITES = frozenset({"write-presets", "write-presets-dfu"})
+_PRESET_KNOWN = _PRESET_WRITES | {"none", "refuse", "clear-slot"}
 
 
 @dataclass(frozen=True)
@@ -53,6 +65,8 @@ class Row:
     def status_text(self) -> str:
         if self.status is Status.UPDATE and self.note:
             return f"Update ({self.note})"
+        if self.status in (Status.WRITE_DFU, Status.OTHER) and self.note:
+            return self.note
         return self.status.value
 
     @property
@@ -93,13 +107,26 @@ def plan_rows(plan: Any) -> list[Row]:
     return rows
 
 
+def _firmware_status(step: Any) -> Status:
+    status = {"none": Status.UP_TO_DATE, "refuse": Status.REFUSED,
+              "convert": Status.CONVERT}.get(step.action)
+    if status is not None:
+        return status
+    if step.action != "firmware" or step.board is None:
+        return Status.OTHER
+    return Status.REPLACES_BOOTLOADER if replaces_bootloader(step.board) else Status.UPDATE
+
+
 def _firmware_row(step: Any, bundle: Any) -> Row:
     board = step.board
-    status = {"none": Status.UP_TO_DATE, "refuse": Status.REFUSED}.get(step.action)
-    if status is None:
-        status = Status.REPLACES_BOOTLOADER if replaces_bootloader(board) else Status.UPDATE
+    status = _firmware_status(step)
+    if board is None:       # not a step the SDK makes today: show it, do not guess
+        return Row(key=step.target, label=str(step.target).capitalize(), installed="-",
+                   release="-", status=status, note=str(step.action),
+                   refusal=step.detail if status is Status.REFUSED else "")
     return Row(key=board.name, label=board.name.capitalize(), installed=board.version,
                release=firmware_tag(bundle, board.board), status=status,
+               note=str(step.action) if status is Status.OTHER else "",
                refusal=step.detail if status is Status.REFUSED else "")
 
 
@@ -130,12 +157,25 @@ def _preset_rows(steps: list[Any], presets: Any, modules: int) -> list[Row]:
 def _preset_row(module: int | None, steps: list[Any], released: int, release: str) -> Row:
     """One preset store's row: how many of the *released* packages it
     holds, and what the update writes and clears there."""
-    writes = sum(s.action == "write-presets" for s in steps)
+    writes = sum(s.action in _PRESET_WRITES for s in steps)
+    dfu = sum(s.action == "write-presets-dfu" for s in steps)
     clears = sum(s.action == "clear-slot" for s in steps)
-    note = ", ".join(([f"writes {writes}"] if writes else [])
-                     + ([f"clears {clears}"] if clears else []))
+    others: dict[str, int] = {}
+    for s in steps:
+        if s.action not in _PRESET_KNOWN:
+            others[str(s.action)] = others.get(str(s.action), 0) + 1
+    rest = ([f"clears {clears}"] if clears else []) + [f"{a} {n}" for a, n in others.items()]
+    head = ([f"Write {writes} (through the bootloader)"] if dfu
+            else [f"writes {writes}"] if writes else [])
+    note = ", ".join(head + rest)
+    if dfu:
+        status = Status.WRITE_DFU
+    elif others:
+        status = Status.OTHER
+    else:
+        status = Status.UPDATE if note else Status.UP_TO_DATE
     return Row(preset_key(module), _preset_label(module), f"{released - writes} of {released}",
-               release, Status.UPDATE if note else Status.UP_TO_DATE, note=note)
+               release, status, note=note)
 
 
 def row_key_for_report(line: str) -> str | None:
@@ -160,6 +200,41 @@ def refusals(rows: list[Row]) -> str:
 
 def pending(rows: list[Row]) -> list[Row]:
     return [r for r in rows if r.pending]
+
+
+def converts(rows: list[Row]) -> list[Row]:
+    """The rows whose board the update converts to clinical."""
+    return [r for r in rows if r.status is Status.CONVERT]
+
+
+@dataclass(frozen=True)
+class Banner:
+    """The strip across the top of the window: which kind of updater this is."""
+
+    text: str
+    background: str
+    foreground: str
+    visible: bool
+    #: Appended to the window title ("Open-LIFU Updater — Clinical"); "" for none.
+    title: str
+
+
+CLINICAL_BANNER = ("CLINICAL UPDATER — converts the unit to clinical and locks its "
+                   "bootloaders (RDP1)")
+RESEARCH_BANNER = "RESEARCH UPDATER"
+
+
+def banner(domain: str | None) -> Banner:
+    """The banner for a release of *domain* ("research", "clinical"), or
+    for no release (None)."""
+    if domain is None:
+        return Banner("Release: none", "#2C2C2E", "#8E8E93", False, "")
+    if domain == "clinical":
+        return Banner(CLINICAL_BANNER, "#8B0000", "#FFFFFF", True, "Clinical")
+    if domain == "research":
+        return Banner(RESEARCH_BANNER, "#1F3A5F", "#FFFFFF", True, "Research")
+    return Banner(f"{domain.upper()} UPDATER", "#48484A", "#FFFFFF", True,
+                  domain.capitalize())
 
 
 def release_line(tag: str, bundle: Any) -> str:

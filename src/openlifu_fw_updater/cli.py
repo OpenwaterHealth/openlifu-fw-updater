@@ -13,7 +13,12 @@ import argparse
 import logging
 from pathlib import Path
 
-from openlifu_fw_updater.release import ReleaseFiles, embedded_release_dir, find_release
+from openlifu_fw_updater.release import (
+    ReleaseFiles,
+    check_domain,
+    embedded_release_dir,
+    find_release,
+)
 
 
 def _parse(argv: list[str] | None) -> argparse.Namespace:
@@ -51,9 +56,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         files = release_files(args)
-        print(f"Release {files.tag}")
         bundle = ReleaseBundle.load(files.firmware, files.presets)
+        check_domain(files, bundle.domain)
+        print(f"Release {files.tag} ({bundle.domain})")
         return run_cli(bundle, plan_only=args.plan, yes=args.yes)
-    except (FileNotFoundError, ReleaseError) as e:
+    except (FileNotFoundError, ReleaseError, ValueError) as e:
         print(f"ERROR: {e}")
         return 2

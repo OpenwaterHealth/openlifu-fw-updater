@@ -1,0 +1,226 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Clinical build
+
+# ---------------------------------------------------------------------------
+# The clinical updater: OpenLIFUUpdater.exe and openlifu-fw-updater.exe around
+# one diathermy CLINICAL release, stored in the private artifact bucket only.
+# It converts a research unit to clinical: the clinical bootloader replaces the
+# research one and locks each board (RDP1); the clinical presets are written
+# through the bootloaders.
+#
+# Needs the diathermy clinical build of that release first (its
+# clinical-build.yml writes gs://openwater-firmware-artifacts/
+# openlifu-diathermy-application/<release>/). Then tag this repository and run
+# the workflow ON THE TAG:
+#
+#   git tag 0.2.0-rc.1 && git push origin 0.2.0-rc.1
+#   gh workflow run clinical-build.yml --ref 0.2.0-rc.1 -f diathermy_release=v0.2.0-rc10
+#
+# The job downloads clinical-firmware-<release>.zip, clinical-presets-<release>.zip,
+# SHA256SUMS and clinical-build-manifest.json from the bucket
+# (scripts/fetch_release.py --clinical checks the zips against both), runs the
+# tests, builds both exes and starts each once (build.ps1: --help, and
+# --self-test, which verifies the embedded release against the SDK's trusted
+# clinical keys; neither opens a unit).
+#
+# Output, write-once, ONLY in the private bucket:
+#
+#   gs://openwater-firmware-artifacts/openlifu-fw-updater/<tag>/
+#     OpenLIFUUpdater-clinical-<tag>.exe      the window
+#     openlifu-fw-updater-clinical-<tag>.exe  the command line
+#     release.json                            the diathermy release it carries
+#     clinical-build-manifest.json            what it was built from, by whom
+#     SHA256SUMS                              the exes and release.json
+#
+# The exes carry clinical firmware and presets: nothing is kept as a workflow
+# artifact or attached to a GitHub release. The uploader can add but not
+# overwrite, so a second run for the same tag fails at the upload, as
+# intended: another release is a new tag.
+#
+# Identities (Workload Identity Federation, no stored Google credential), for
+# this repository's `clinical` environment (OpenWater-KMS):
+#   sa-fw-artifact-reader    read the bucket
+#   sa-bl-artifact-uploader  add to the bucket (no overwrite, no delete)
+# ---------------------------------------------------------------------------
+on:
+  workflow_dispatch:
+    inputs:
+      diathermy_release:
+        description: "openlifu-diathermy-application release whose clinical build to embed (e.g. v0.2.0-rc10)"
+        required: true
+      sdk_ref:
+        description: "openlifu-sdk branch, tag or commit instead of the pyproject pin (optional)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCS_BUCKET: openwater-firmware-artifacts
+  WIF_PROVIDER: projects/341318872140/locations/global/workloadIdentityPools/github/providers/github-oidc
+  READER_SA: sa-fw-artifact-reader@openwater-cloud.iam.gserviceaccount.com
+  UPLOADER_SA: sa-bl-artifact-uploader@openwater-cloud.iam.gserviceaccount.com
+  PRODUCT: openlifu-fw-updater
+
+jobs:
+  clinical:
+    runs-on: windows-latest
+    environment: clinical
+
+    steps:
+      - name: Require a release tag
+        env:
+          DIATHERMY_RELEASE: ${{ inputs.diathermy_release }}
+        run: |
+          if ($env:GITHUB_REF -notlike "refs/tags/*") {
+            throw "Run this workflow on a release tag (gh workflow run clinical-build.yml --ref <tag>), not on '$env:GITHUB_REF_NAME'."
+          }
+          if ($env:GITHUB_REF_NAME -notmatch '^\d+\.\d+\.\d+(-rc\.\d+)?$') {
+            throw "'$env:GITHUB_REF_NAME' is not a release tag (X.Y.Z or X.Y.Z-rc.N)."
+          }
+          if ($env:DIATHERMY_RELEASE -notmatch '^v\d+\.\d+\.\d+(-rc\d+)?$') {
+            throw "'$env:DIATHERMY_RELEASE' is not a diathermy release tag (vX.Y.Z or vX.Y.Z-rcN)."
+          }
+          "Clinical build of $env:GITHUB_REF_NAME around diathermy $env:DIATHERMY_RELEASE, requested by $env:GITHUB_ACTOR"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.10"
+
+      - name: Install
+        env:
+          SDK_REF: ${{ inputs.sdk_ref }}
+        run: |
+          python -m pip install -e ".[build,test]"
+          if ($LASTEXITCODE -ne 0) { throw "The updater could not be installed." }
+          if ($env:SDK_REF) {
+            python -m pip install --force-reinstall --no-deps "openlifu-sdk[crypto] @ git+https://github.com/OpenwaterHealth/openlifu-sdk.git@$env:SDK_REF"
+            if ($LASTEXITCODE -ne 0) { throw "openlifu-sdk@$env:SDK_REF could not be installed." }
+          }
+          "SDK_VERSION=$(python -c "import importlib.metadata as m; print(m.version('openlifu-sdk'))")" >> $env:GITHUB_ENV
+
+      - name: Authenticate to Google Cloud (artifact reader)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.READER_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Fetch the clinical release
+        env:
+          DIATHERMY_RELEASE: ${{ inputs.diathermy_release }}
+        run: |
+          python scripts/fetch_release.py --clinical $env:DIATHERMY_RELEASE
+          if ($LASTEXITCODE -ne 0) { throw "The clinical release could not be fetched: run the diathermy clinical-build.yml on $env:DIATHERMY_RELEASE first." }
+          "DIATHERMY_RELEASE=$env:DIATHERMY_RELEASE" >> $env:GITHUB_ENV
+
+      - name: Tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m pytest -ra
+          if ($LASTEXITCODE -ne 0) { throw "Tests failed." }
+
+      # build.ps1 starts both exes once: a build that cannot start, or whose
+      # embedded release does not verify, fails here.
+      - name: Build
+        run: ./build.ps1
+
+      - name: Package
+        id: pkg
+        run: |
+          New-Item -ItemType Directory -Force package | Out-Null
+          $tag = $env:GITHUB_REF_NAME
+          Copy-Item dist\OpenLIFUUpdater.exe "package\OpenLIFUUpdater-clinical-$tag.exe"
+          Copy-Item dist\openlifu-fw-updater.exe "package\openlifu-fw-updater-clinical-$tag.exe"
+          Copy-Item src\openlifu_fw_updater\release\release.json package\
+          # Same format as sha256sum writes, LF line ends.
+          $sums = Get-ChildItem package -File | Sort-Object Name | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" }
+          [IO.File]::WriteAllText("$PWD\package\SHA256SUMS", ($sums -join "`n") + "`n")
+          $sums
+          @'
+          import datetime, hashlib, json, os
+          from pathlib import Path
+
+          release = Path("src/openlifu_fw_updater/release")
+          info = json.loads((release / "release.json").read_text(encoding="utf-8"))
+          diathermy = (release / info["manifest"]).read_bytes()
+          sums = dict(line.split("  ", 1)[::-1]
+                      for line in Path("package/SHA256SUMS").read_text().splitlines())
+          env = os.environ
+          manifest = {
+              "product": env["PRODUCT"],
+              "variant": "clinical",
+              "tag": env["GITHUB_REF_NAME"],
+              "commit": env["GITHUB_SHA"],
+              "built_utc": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "diathermy": {
+                  "release": info["tag"],
+                  "firmware": info["firmware"],
+                  "presets": info["presets"],
+                  "manifest_sha256": hashlib.sha256(diathermy).hexdigest(),
+                  "commit": json.loads(diathermy).get("commit"),
+              },
+              "openlifu_sdk": env["SDK_VERSION"],
+              "approval": {
+                  "environment": "clinical",
+                  "requested_by": env["GITHUB_ACTOR"],
+                  "run": f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/{env['GITHUB_RUN_ID']}",
+              },
+              "files": sums,
+          }
+          text = json.dumps(manifest, indent=2) + "\n"
+          Path("package/clinical-build-manifest.json").write_bytes(text.encode())
+          print(text)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw "The build manifest could not be written." }
+
+      # Write-once copy in the private bucket. A re-run on the same tag fails
+      # here if the objects exist, as intended: use a new tag.
+      - name: Authenticate to Google Cloud (uploader)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.UPLOADER_SA }}
+
+      - name: Upload to the artifact bucket
+        run: |
+          $dest = "gs://$env:GCS_BUCKET/$env:PRODUCT/$env:GITHUB_REF_NAME/"
+          foreach ($f in Get-ChildItem package -File) {
+            gcloud storage cp $f.FullName "$dest$($f.Name)"
+            if ($LASTEXITCODE -ne 0) { throw "Upload of $($f.Name) to $dest failed." }
+          }
+          "DEST=$dest" >> $env:GITHUB_ENV
+          "Uploaded to $dest"
+
+      - name: Summary
+        if: always() && steps.pkg.outcome == 'success'
+        run: |
+          $lines = @(
+            "## Open-LIFU Updater $env:GITHUB_REF_NAME (clinical)", "",
+            "| | |", "|---|---|",
+            "| Diathermy release | ``$env:DIATHERMY_RELEASE`` (clinical) |",
+            "| openlifu-sdk | ``$env:SDK_VERSION`` |",
+            "| Commit | ``$env:GITHUB_SHA`` |",
+            "| Requested by | ``$env:GITHUB_ACTOR`` |", "",
+            '```', (Get-Content package\SHA256SUMS), '```', ""
+          )
+          if ($env:DEST) {
+            $lines += "Stored in ``$env:DEST`` (private bucket only):"
+            $lines += ""
+            $lines += '```'
+            $lines += "gcloud storage cp -r $env:DEST ."
+            $lines += '```'
+          } else {
+            $lines += "**Not stored**: the upload did not complete."
+          }
+          $lines >> $env:GITHUB_STEP_SUMMARY

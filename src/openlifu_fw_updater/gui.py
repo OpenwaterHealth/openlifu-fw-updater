@@ -41,7 +41,12 @@ from PySide6.QtWidgets import (
 )
 
 from openlifu_fw_updater import rows as tbl
-from openlifu_fw_updater.release import ReleaseFiles, embedded_release_dir, find_release
+from openlifu_fw_updater.release import (
+    ReleaseFiles,
+    check_domain,
+    embedded_release_dir,
+    find_release,
+)
 from openlifu_fw_updater.rows import Status
 
 APP_NAME = "Open-LIFU Updater"
@@ -58,16 +63,22 @@ HARDWARE_IN_USE = ("Another Open-LIFU application is using the unit. Close it an
 IRREVERSIBLE_BOOTLOADER = (
     "The bootloader of {boards} is replaced on the way: {they} run firmware from before "
     "the current bootloader. That cannot be undone.")
+CLINICAL_CONVERSION = (
+    "The bootloaders of {boards} are replaced with the clinical bootloader and the boards "
+    "are locked (RDP1): the unit becomes a clinical unit. Returning it to research needs "
+    "SWD recovery (RMA); this updater cannot undo it.")
 POWER_WARNING = ("DO NOT POWER OFF OR UNPLUG the unit until the updater says it has "
                  "finished.")
 
 GREEN, AMBER, RED, GREY, TEXT = "#34C759", "#FF9F0A", "#FF453A", "#8E8E93", "#F2F2F7"
 
 _COLOUR = {Status.UP_TO_DATE: GREEN, Status.UPDATE: AMBER,
-           Status.REPLACES_BOOTLOADER: AMBER, Status.REFUSED: RED}
+           Status.REPLACES_BOOTLOADER: AMBER, Status.CONVERT: AMBER,
+           Status.WRITE_DFU: AMBER, Status.OTHER: AMBER, Status.REFUSED: RED}
 
 STYLE = f"""
 QWidget {{ background: #1C1C1E; color: {TEXT}; font-family: "Segoe UI"; font-size: 10pt; }}
+QLabel#banner {{ font-weight: 700; font-size: 11pt; padding: 8px 16px; }}
 QLabel#title {{ font-size: 17pt; font-weight: 600; }}
 QLabel#subtitle, QLabel#detail {{ color: {GREY}; }}
 QLabel#columnHead {{ color: {GREY}; font-size: 9pt; }}
@@ -144,7 +155,7 @@ class Worker(QObject):
     talks to the unit, off the window's thread."""
 
     fatal = Signal(str)                 # the release cannot be used
-    releaseLoaded = Signal(str)         # its line for the subtitle
+    releaseLoaded = Signal(str, str)    # its line for the subtitle, its domain
     searching = Signal()
     blocked = Signal(str)               # cannot read the unit; Check again
     notConnected = Signal(str)          # console and/or transmitter missing
@@ -172,13 +183,14 @@ class Worker(QObject):
             self._workdir = tempfile.TemporaryDirectory(prefix="lifu-release-")
             self._bundle = ReleaseBundle.load(files.firmware, files.presets,
                                               workdir=self._workdir.name)
+            check_domain(files, self._bundle.domain)
         except (FileNotFoundError, ReleaseError, OSError, ValueError) as exc:
             log.exception("the release cannot be used")
             self.fatal.emit(f"The release cannot be used: {exc}")
             return
         for line in self._bundle.describe():
             log.info("%s", line)
-        self.releaseLoaded.emit(tbl.release_line(files.tag, self._bundle))
+        self.releaseLoaded.emit(tbl.release_line(files.tag, self._bundle), self._bundle.domain)
         self.check()
 
     def _update(self):
@@ -340,9 +352,20 @@ class Window(QWidget):
     # ------------------------------------------------------------------ layout
 
     def _build(self):
-        root = QVBoxLayout(self)
+        # The banner spans the window edge to edge; the rest keeps its margins.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self._banner = QLabel()
+        self._banner.setObjectName("banner")
+        self._banner.setWordWrap(True)
+        self._banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        outer.addWidget(self._banner)
+        self._show_banner(None)
+        root = QVBoxLayout()
         root.setContentsMargins(28, 24, 28, 20)
         root.setSpacing(14)
+        outer.addLayout(root, 1)
 
         header = QHBoxLayout()
         header.setSpacing(16)
@@ -416,6 +439,14 @@ class Window(QWidget):
 
     # ------------------------------------------------------------------ pieces
 
+    def _show_banner(self, domain: str | None):
+        banner = tbl.banner(domain)
+        self._banner.setText(banner.text)
+        self._banner.setStyleSheet(f"background: {banner.background}; "
+                                   f"color: {banner.foreground};")
+        self._banner.setVisible(banner.visible)
+        self.setWindowTitle(f"{APP_NAME} — {banner.title}" if banner.title else APP_NAME)
+
     def _say(self, text: str, colour: str = TEXT):
         self._message.setStyleSheet(f"color: {colour};")
         self._message.setText(text)
@@ -467,11 +498,13 @@ class Window(QWidget):
 
     # ------------------------------------------------------------------ worker
 
-    def _on_release(self, line: str):
+    def _on_release(self, line: str, domain: str):
         self._subtitle.setText(f"Release {line}")
+        self._show_banner(domain)
 
     def _on_fatal(self, text: str):
         self._subtitle.setText("Release: none")
+        self._show_banner(None)
         self._say(text, RED)
         self._idle(can_update=False, can_check=False)
 
@@ -542,8 +575,11 @@ class Window(QWidget):
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
         box.setWindowTitle(APP_NAME)
-        box.setText("Update the unit now?")
+        converted = [r.label.lower() for r in tbl.converts(todo)]
+        box.setText("Convert the unit to clinical now?" if converted else "Update the unit now?")
         parts = ["Updates: " + ", ".join(r.label.lower() for r in todo) + "."]
+        if converted:
+            parts.append(CLINICAL_CONVERSION.format(boards=", ".join(converted)))
         replaced = [r.label.lower() for r in todo if r.status is Status.REPLACES_BOOTLOADER]
         if replaced:
             parts.append(IRREVERSIBLE_BOOTLOADER.format(
@@ -631,6 +667,7 @@ def self_test(window: Window, locate: Callable[[], ReleaseFiles]) -> int:
         files = locate()
         with tempfile.TemporaryDirectory(prefix="lifu-release-") as work:
             bundle = ReleaseBundle.load(files.firmware, files.presets, workdir=work)
+        check_domain(files, bundle.domain)
         if STM32USBDFU()._get_backend() is None:   # loads libusb, enumerates nothing
             raise RuntimeError("libusb cannot be loaded: USB DFU would not work")
     except Exception as exc:  # noqa: BLE001 - the self-test reports every failure

@@ -19,6 +19,9 @@ class ReleaseFiles:
     tag: str
     firmware: Path
     presets: Path | None
+    #: The domain release.json claims ("research" or "clinical"); None for
+    #: files given on the command line, whose domain only the bundle tells.
+    domain: str | None = None
 
 
 def embedded_release_dir() -> Path:
@@ -42,4 +45,16 @@ def find_release(folder: Path) -> ReleaseFiles:
     for path in (firmware, presets):
         if path is not None and not path.is_file():
             raise FileNotFoundError(f"{info_path} names {path.name}, which is missing")
-    return ReleaseFiles(tag=info["tag"], firmware=firmware, presets=presets)
+    return ReleaseFiles(tag=info["tag"], firmware=firmware, presets=presets,
+                        domain=info.get("domain", "research"))
+
+
+def check_domain(files: ReleaseFiles, bundle_domain: str) -> None:
+    """The loaded bundle is the domain release.json claims.
+
+    Raises:
+        ValueError: release.json says one domain, the signatures another.
+    """
+    if files.domain is not None and files.domain != bundle_domain:
+        raise ValueError(f"release.json says {files.domain}, but the release is signed "
+                         f"with the {bundle_domain} keys")
