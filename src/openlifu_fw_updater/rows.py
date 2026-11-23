@@ -33,6 +33,10 @@ class Status(Enum):
     #: A research board taken to a clinical release: the clinical bootloader
     #: replaces the research one and locks the board (RDP1).
     CONVERT = "Convert to clinical (locks the bootloader)"
+    #: The application is the release's, its bootloader is older than the
+    #: release's: the bootloader is replaced and the same application
+    #: re-installed (the presets are rewritten after).
+    UPDATE_BOOTLOADER = "Update bootloader"
     #: Presets written through the bootloader (clinical presets).
     WRITE_DFU = "Write (through the bootloader)"
     #: An SDK action this updater does not know; shown by its name.
@@ -42,7 +46,7 @@ class Status(Enum):
 
 #: Statuses that write to the unit.
 PENDING = frozenset({Status.UPDATE, Status.REPLACES_BOOTLOADER, Status.CONVERT,
-                     Status.WRITE_DFU, Status.OTHER})
+                     Status.UPDATE_BOOTLOADER, Status.WRITE_DFU, Status.OTHER})
 
 #: Preset step actions that write a package (the second through the bootloader).
 _PRESET_WRITES = frozenset({"write-presets", "write-presets-dfu"})
@@ -63,8 +67,8 @@ class Row:
 
     @property
     def status_text(self) -> str:
-        if self.status is Status.UPDATE and self.note:
-            return f"Update ({self.note})"
+        if self.status in (Status.UPDATE, Status.UPDATE_BOOTLOADER) and self.note:
+            return f"{self.status.value} ({self.note})"
         if self.status in (Status.WRITE_DFU, Status.OTHER) and self.note:
             return self.note
         return self.status.value
@@ -109,7 +113,8 @@ def plan_rows(plan: Any) -> list[Row]:
 
 def _firmware_status(step: Any) -> Status:
     status = {"none": Status.UP_TO_DATE, "refuse": Status.REFUSED,
-              "convert": Status.CONVERT}.get(step.action)
+              "convert": Status.CONVERT,
+              "bootloader": Status.UPDATE_BOOTLOADER}.get(step.action)
     if status is not None:
         return status
     if step.action != "firmware" or step.board is None:
@@ -126,8 +131,19 @@ def _firmware_row(step: Any, bundle: Any) -> Row:
                    refusal=step.detail if status is Status.REFUSED else "")
     return Row(key=board.name, label=board.name.capitalize(), installed=board.version,
                release=firmware_tag(bundle, board.board), status=status,
-               note=str(step.action) if status is Status.OTHER else "",
+               note=_firmware_note(step, status, bundle),
                refusal=step.detail if status is Status.REFUSED else "")
+
+
+def _firmware_note(step: Any, status: Status, bundle: Any) -> str:
+    if status is Status.OTHER:
+        return str(step.action)
+    if status is Status.UPDATE_BOOTLOADER:
+        target = (getattr(bundle, "bootloaders", None) or {}).get(step.board.board)
+        installed = getattr(step.board, "bootloader", None)
+        if installed and target:
+            return f"{installed} -> {target}"
+    return ""
 
 
 def _preset_label(module: int | None) -> str:
