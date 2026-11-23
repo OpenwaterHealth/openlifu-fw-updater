@@ -178,6 +178,14 @@ gh workflow run clinical-build.yml --ref 0.2.0-rc.1 -f diathermy_release=v0.2.0-
   `openlifu-fw-updater-<tag>-research/` beside it, and also keeps a workflow artifact.
   `scripts/package_build.py` packages both.
 
+## Recovery over SWD
+
+The updater only works over USB. Taking a clinical (locked) unit back to research,
+putting a given image (e.g. the last field release) on a research unit, or rescuing a
+half-written board is done with an ST-Link: see [docs/RECOVERY.md](docs/RECOVERY.md).
+A clinical board's recovery mass-erases it, user configuration included, so save the
+configuration first.
+
 ## Development
 
 ```
