@@ -6,7 +6,7 @@ name: Build updater
 # line) around one diathermy release, on demand or for a tag:
 #
 #   gh workflow run build-updater.yml --ref <branch-or-tag> -f release_tag=v0.2.0-rc8
-#   git tag 0.1.0 && git push origin 0.1.0     (uses the repository variable
+#   git tag 1.0.0 && git push origin 1.0.0     (uses the repository variable
 #                                              DIATHERMY_RELEASE as the release)
 #
 # The job fetches the release's firmware and research preset zips
@@ -14,7 +14,20 @@ name: Build updater
 # SHA-256 digests), runs the tests, builds both exes and starts each once
 # (build.ps1: --help, and --self-test, which verifies the embedded release
 # against the SDK's trusted keys and loads libusb; neither opens a unit). The
-# exes, release.json and SHA256SUMS are kept as a workflow artifact.
+# exes, release.json, build-manifest.json and SHA256SUMS are kept as a workflow
+# artifact (scripts/package_build.py).
+#
+# Built from a tag (a tag push, or a dispatch with --ref <tag>), they are also
+# stored, write-once, in the private artifact bucket next to the diathermy
+# release they carry:
+#
+#   gs://openwater-firmware-artifacts/openlifu-diathermy-application/<release>/
+#     openlifu-fw-updater-<tag>-research/
+#
+# The clinical updater goes beside it (clinical-build.yml, ...-clinical/).
+# Identity: sa-bl-artifact-uploader through Workload Identity Federation
+# (tags of this repository); it can add but not overwrite, so a second run for
+# the same tag and release fails at the upload.
 #
 # TODO(code signing): the exes are not code-signed yet. Do it the way
 # openlifu-diathermy-application's release-build.yml does: on rc and full
@@ -41,6 +54,12 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+
+env:
+  GCS_BUCKET: openwater-firmware-artifacts
+  WIF_PROVIDER: projects/341318872140/locations/global/workloadIdentityPools/github/providers/github-oidc
+  UPLOADER_SA: sa-bl-artifact-uploader@openwater-cloud.iam.gserviceaccount.com
 
 jobs:
   build:
@@ -93,16 +112,15 @@ jobs:
 
       - name: Package
         run: |
-          New-Item -ItemType Directory -Force package | Out-Null
-          Copy-Item dist\OpenLIFUUpdater.exe, dist\openlifu-fw-updater.exe package\
-          Copy-Item src\openlifu_fw_updater\release\release.json package\
-          $sums = Get-ChildItem package -File | Sort-Object Name | ForEach-Object {
-            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" }
-          [IO.File]::WriteAllText("$PWD\package\SHA256SUMS", ($sums -join "`n") + "`n")
-          $sums
+          $out = python scripts/package_build.py --variant research --tag $env:GITHUB_REF_NAME
+          if ($LASTEXITCODE -ne 0) { throw "The build could not be packaged." }
+          $out
+          $dest = ($out | Select-String '^DEST=').Line.Substring(5)
+          "BUCKET_DEST=$dest" >> $env:GITHUB_ENV
+          $sums = Get-Content package\SHA256SUMS
           @("## Open-LIFU Updater", "",
             "| | |", "|---|---|",
-            "| Release | ``$env:RELEASE_TAG`` |",
+            "| Release | ``$env:RELEASE_TAG`` (research) |",
             "| openlifu-sdk | ``$env:SDK_VERSION`` |",
             "| Commit | ``$env:GITHUB_SHA`` |", "",
             '```', $sums, '```') >> $env:GITHUB_STEP_SUMMARY
@@ -114,3 +132,26 @@ jobs:
           path: package/
           if-no-files-found: error
           retention-days: 30
+
+      # Tag builds only: a write-once copy in the private bucket.
+      - name: Authenticate to Google Cloud (uploader)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.UPLOADER_SA }}
+
+      - name: Set up gcloud
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Upload to the artifact bucket
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          $dest = $env:BUCKET_DEST
+          foreach ($f in Get-ChildItem package -File) {
+            gcloud storage cp $f.FullName "$dest$($f.Name)"
+            if ($LASTEXITCODE -ne 0) { throw "Upload of $($f.Name) to $dest failed." }
+          }
+          "Stored in ``$dest`` (private bucket): ``gcloud storage cp -r $dest .``" >> $env:GITHUB_STEP_SUMMARY
+          "Uploaded to $dest"

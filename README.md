@@ -158,18 +158,33 @@ gh workflow run clinical-build.yml --ref 0.2.0-rc.1 -f diathermy_release=v0.2.0-
   exes and self-tests them, then stores, write-once and **only in the private bucket**:
 
   ```
-  gs://openwater-firmware-artifacts/openlifu-fw-updater/<tag>/
-    OpenLIFUUpdater-clinical-<tag>.exe
-    openlifu-fw-updater-clinical-<tag>.exe
-    release.json
-    clinical-build-manifest.json   updater tag and commit, diathermy release and its manifest's
-                                   SHA-256, SDK version, build time, run and requester, file sums
-    SHA256SUMS
+  gs://openwater-firmware-artifacts/openlifu-diathermy-application/<release>/
+    openlifu-fw-updater-<tag>-clinical/
+      OpenLIFUUpdater-clinical-<tag>.exe
+      openlifu-fw-updater-clinical-<tag>.exe
+      release.json
+      build-manifest.json   updater tag and commit, diathermy release and its manifest's
+                            SHA-256, SDK version, build time, run and requester, file sums
+      SHA256SUMS
   ```
 
-  Nothing is kept as a workflow artifact or published. A second run for the same tag fails at
-  the upload; another release is a new tag. To download it: `gcloud storage cp -r
-  gs://openwater-firmware-artifacts/openlifu-fw-updater/<tag> .`
+  The updater sits next to the diathermy release it carries, in its own folder so its files
+  never collide with the release's. Nothing is kept as a workflow artifact or published. A
+  second run for the same tag and release fails at the upload; another build is a new tag. To
+  download it: `gcloud storage cp -r
+  gs://openwater-firmware-artifacts/openlifu-diathermy-application/<release>/openlifu-fw-updater-<tag>-clinical .`
+
+  The research build (`build-updater.yml`) does the same from a tag, in
+  `openlifu-fw-updater-<tag>-research/` beside it, and also keeps a workflow artifact.
+  `scripts/package_build.py` packages both.
+
+## Recovery over SWD
+
+The updater only works over USB. Taking a clinical (locked) unit back to research,
+putting a given image (e.g. the last field release) on a research unit, or rescuing a
+half-written board is done with an ST-Link: see [docs/RECOVERY.md](docs/RECOVERY.md).
+A clinical board's recovery mass-erases it, user configuration included, so save the
+configuration first.
 
 ## Development
 

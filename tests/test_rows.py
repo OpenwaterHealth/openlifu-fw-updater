@@ -178,3 +178,20 @@ def test_the_banner_per_domain():
     none = rows.banner(None)
     assert not none.visible and none.text == "Release: none" and none.title == ""
     assert rows.banner("vet").text == "VET UPDATER"
+
+
+def test_a_bootloader_update_is_pending_and_names_both_versions(release, keys):
+    import dataclasses
+
+    plan = _plan(release, keys)
+    plan.firmware = [ru.Step(s.target, "bootloader", "bootloader 1.1.0-rc.1 -> release",
+                             dataclasses.replace(s.board, bootloader="1.1.0-rc.1"))
+                     for s in plan.firmware]
+    table = {r.key: r for r in rows.plan_rows(plan)}
+    assert table["console"].status is Status.UPDATE_BOOTLOADER
+    assert table["console"].status_text == "Update bootloader (1.1.0-rc.1 -> 1.1.0-rc.3)"
+    assert table["transmitter master"].status_text == (
+        "Update bootloader (1.1.0-rc.1 -> 1.1.0-rc.2)")
+    assert all(table[k].pending for k in ("console", "transmitter master",
+                                          "transmitter module 1"))
+    assert rows.converts(list(table.values())) == []
