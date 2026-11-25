@@ -6,7 +6,7 @@ name: Build updater
 # line) around one diathermy release, on demand or for a tag:
 #
 #   gh workflow run build-updater.yml --ref <branch-or-tag> -f release_tag=v0.2.0-rc8
-#   git tag 0.1.0 && git push origin 0.1.0     (uses the repository variable
+#   git tag 1.0.0 && git push origin 1.0.0     (uses the repository variable
 #                                              DIATHERMY_RELEASE as the release)
 #
 # The job fetches the release's firmware and research preset zips
